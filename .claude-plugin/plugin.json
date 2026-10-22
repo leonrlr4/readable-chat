@@ -1,0 +1,6 @@
+{
+  "name": "readable-chat",
+  "version": "0.1.0",
+  "description": "Readable Claude Code replies: renders each reply with leaf (bordered tables with in-cell wrapping, styled headings, framed code), folds long replies, reader pane, clickable paths that open in nvim, collapsed tool output, mermaid as images",
+  "types": "./types/index.d.ts"
+}
