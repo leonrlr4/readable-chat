@@ -82,9 +82,11 @@ export function linkify(lines: readonly Line[], text: string, places: Places): L
     line.flatMap((span, i) => {
       const after = line[i + 1]
       // How leaf draws a link: a `#` marker immediately followed by underlined text; when the text wraps, the next line still starts underlined.
+      // Only the text carries the href: where the terminal has no hyperlinks, Claude Code draws each Link's URL after
+      // its text, and a linked marker put the URL there twice.
       if (span.text === '#' && after?.style.underline) {
         current = hrefs[next++]
-        return current ? [linked(span, current, places)] : [span]
+        return [span]
       }
       if (current && span.style.underline) return [linked(span, current, places)]
       current = undefined

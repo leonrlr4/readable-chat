@@ -90,7 +90,24 @@ export function cardifyWideTables(text: string, columns: number): string {
 }
 
 // room is the number of columns the table can actually use: tables that pass shouldCardify become cards; other tables and content inside code fences stay unchanged.
+// leaf's input, the fold check and the math scan each cardify the same reply, and a streamed reply is cardified again for
+// every new piece; the last few results are kept so those calls share one pass.
+const CARDIFIED_SIZE = 8
+const cardified = new Map<string, string>()
+
 export function cardifyTables(text: string, room: number): string {
+  // Without a table there is nothing to turn into cards.
+  if (!text.includes('|')) return text
+  const key = `${room}\n${text}`
+  const hit = cardified.get(key)
+  if (hit !== undefined) return hit
+  const result = cardify(text, room)
+  if (cardified.size >= CARDIFIED_SIZE) cardified.delete(cardified.keys().next().value ?? '')
+  cardified.set(key, result)
+  return result
+}
+
+function cardify(text: string, room: number): string {
   const lines = text.split('\n')
   const out: string[] = []
   let isInFence = false

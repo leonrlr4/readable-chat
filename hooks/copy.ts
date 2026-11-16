@@ -46,7 +46,8 @@ export function cleanSelection(selected: string): string {
   }
 
   for (const raw of selected.split('\n')) {
-    const line = raw.replace(/^(⏺ | {2})/, '').replace(/\s+$/, '')
+    // A code block's 「⧉ 複製」 button sits at the right end of its top frame and comes along in a screen copy.
+    const line = raw.replace(/^(⏺ | {2})/, '').replace(/\s*⧉ 複製\s*$/, '').replace(/\s+$/, '')
     const trimmed = line.trim()
 
     if (isInCode) {
@@ -168,12 +169,24 @@ export function sourceSlice(selected: string, source: string): string | null {
   let start = key.indexOf(wanted)
   let end = start + wanted.length
   if (start < 0) {
-    // leaf adds text the source lacks (a link's URL, a table turned into cards), so match the two ends separately.
+    // leaf adds text the source lacks (a link's URL, a table turned into cards), and a screen copy picks up what was
+    // drawn over the reply (the sticky heading, on every row it sat on while the drag scrolled). So the two ends are
+    // matched separately, each by the first EDGE letters near it that the source has.
     if (wanted.length < EDGE * 2) return null
-    start = key.indexOf(wanted.slice(0, EDGE))
-    const tail = start < 0 ? -1 : key.indexOf(wanted.slice(-EDGE), start)
-    if (tail < 0) return null
-    end = tail + EDGE
+    const reach = Math.floor(wanted.length / 3)
+    // What was drawn over a row takes about as many letters as the text it hid, so an end found `offset` letters in
+    // reaches back (or on) as far, to keep the rows the overlay covered.
+    start = -1
+    for (let offset = 0; start < 0 && offset + EDGE <= reach; offset += EDGE / 2) {
+      const found = key.indexOf(wanted.slice(offset, offset + EDGE))
+      if (found >= 0) start = Math.max(0, found - offset)
+    }
+    end = -1
+    for (let offset = 0; start >= 0 && end < 0 && offset + EDGE <= reach; offset += EDGE / 2) {
+      const found = key.indexOf(wanted.slice(wanted.length - offset - EDGE, wanted.length - offset), start)
+      if (found >= 0) end = Math.min(key.length, found + EDGE + offset)
+    }
+    if (end < 0) return null
     if (end - start > wanted.length * 1.5 + 50) return null
   }
 
@@ -195,11 +208,4 @@ export function sourceSlice(selected: string, source: string): string | null {
     while (to < source.length && MARKUP.includes(source[to] ?? '')) to++
   }
   return source.slice(from, to).trim()
-}
-
-// Whether the clipboard holds a copy of the rendered selection, as a terminal or multiplexer writes it on mouse release:
-// the same letters and digits, whatever indentation, padding or wrapping it kept.
-export function isScreenCopy(clipboard: string, selected: string): boolean {
-  const wanted = words(selected).key
-  return wanted.length > 0 && words(clipboard).key === wanted
 }

@@ -16,8 +16,6 @@ export type Style = {
 export type Span = { text: string; style: Style; href?: string; file?: { path: string; line?: number } }
 export type Line = Span[]
 
-const SGR = /\x1b\[([0-9;]*)m/g
-
 function hex(r: number, g: number, b: number): string {
   return '#' + [r, g, b].map(n => n.toString(16).padStart(2, '0')).join('')
 }
@@ -107,18 +105,51 @@ function push(line: Line, text: string, style: Style) {
   else line.push({ text, style })
 }
 
+// leaf repeats the same few codes thousands of times in a long reply (its text color, then a reset, word after word).
+// Each style reached from a style by a code is worked out once and shared, so a repeat costs one lookup, and spans of
+// one style hold the same object, which isSameStyle compares first. Styles are never changed after they are made.
+const NONE: Style = {}
+const SGR_PARAMS = /^[0-9;]*$/
+const TRANSITIONS_SIZE = 500
+const transitions = new Map<Style, Map<string, Style>>()
+
+function next(style: Style, params: string): Style {
+  if (params === '0' || params === '') return NONE
+  let from = transitions.get(style)
+  if (!from) {
+    if (transitions.size >= TRANSITIONS_SIZE) transitions.clear()
+    from = new Map()
+    transitions.set(style, from)
+  }
+  let to = from.get(params)
+  if (!to) {
+    to = apply(style, params.split(';').map(Number))
+    from.set(params, to)
+  }
+  return to
+}
+
 export function parseAnsi(output: string): Line[] {
   const lines: Line[] = []
-  let style: Style = {}
+  let style = NONE
   for (const raw of output.replace(/\n$/, '').split('\n')) {
     const line: Line = []
     let at = 0
-    for (const match of raw.matchAll(SGR)) {
-      const index = match.index ?? 0
-      if (index > at) push(line, raw.slice(at, index), style)
-      const params = match[1] ?? ''
-      style = params === '0' || params === '' ? {} : apply(style, params.split(';').map(Number))
-      at = index + match[0].length
+    let from = 0
+    for (;;) {
+      const escape = raw.indexOf('\x1b[', from)
+      if (escape < 0) break
+      const end = raw.indexOf('m', escape + 2)
+      if (end < 0) break
+      const params = raw.slice(escape + 2, end)
+      // Not SGR (leaf writes no other escapes): the escape stays in the text.
+      if (!SGR_PARAMS.test(params)) {
+        from = escape + 1
+        continue
+      }
+      if (escape > at) push(line, raw.slice(at, escape), style)
+      style = next(style, params)
+      at = from = end + 1
     }
     if (at < raw.length) push(line, raw.slice(at), style)
     lines.push(line)

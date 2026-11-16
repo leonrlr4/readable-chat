@@ -2,7 +2,7 @@ import { atom, memberOf, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
 import type { Line } from './ansi'
-import { cleanSelection, isScreenCopy, sourceSlice } from './copy'
+import { cleanSelection, sourceSlice } from './copy'
 import { FOLD_LINES, cardifyTables, codeBlocks, fold, headings, lineCount, plainTitle } from './format'
 import { registerFocus } from './focus'
 import { extractImages } from './images'
@@ -130,55 +130,94 @@ function copyableText(selected: { text: string; requestId?: string }): { text: s
   return { text: cleanSelection(selected.text), isSource: false }
 }
 
-// Copy on select writes the screen text straight to the clipboard, past every hook, and so does a multiplexer (herdr's
-// copy_on_select, tmux) when the mouse is released. For GUARD_POLLS polls after the selection last changed, a clipboard
-// holding that screen text gets the matching source written over it, so a plain mouse selection pastes as markdown.
-// Anything else on the clipboard is left alone: a selection left on screen changes its text as the transcript scrolls or
-// redraws, and writing on every change overwrote a screenshot or a copy from another app taken since.
-// Without wl-paste the clipboard cannot be read; the source is then copied when the selection changes and once more
-// RECOPY_MS later, after the engine's own copy has landed. No toast either way: a selection being dragged changes on
-// every poll, so one would pop up again and again.
+// Whoever copied the screen text (Claude Code's copy on select, herdr's copy_on_select, tmux, kitty), the clipboard ends
+// up holding leaf's rendering: wrap breaks, `1.` for `1)`, no backticks, plus whatever else the drag swept up, such as
+// a code block's 「⧉ 複製」 button. `wl-paste --watch` reports every clipboard change; text that sourceSlice traces to one of
+// this session's replies is swapped for the markdown it came from, so it pastes into Slack as written.
+// Matching the clipboard against the sources needs no selection at all, so it works when herdr owns the mouse and
+// Claude Code never sees a selection; anything that traces to no reply (a screenshot, a copy from another app) is left
+// alone. A word or a phrase inside one line is wanted exactly as seen, so only text over several lines is swapped.
+// Several sessions watch the same clipboard; a slice written within REWRITE_MS is not written again, so two sessions that
+// trace the same text to slightly different slices settle instead of trading writes.
+// Without wl-paste the clipboard cannot be read: the selection is polled instead, and its source copied when it changes
+// and once more RECOPY_MS later, after the engine's own copy has landed.
 const SELECTION_POLL_MS = 250
 const RECOPY_MS = 600
-const GUARD_POLLS = 20
+const REWRITE_MS = 3000
 let selectionWatch: { cancel: () => void } | undefined
 let themeWatch: { cancel: () => void } | undefined
+let clipboardWatch: AsyncGenerator<unknown, unknown> | undefined
 let lastSelection: string | undefined
-let pending: { selected: string; text: string; polls: number } | undefined
-let canReadClipboard: boolean | undefined
+const written = new Map<string, number>()
+
+function sourceOfClipboard(text: string): string | null {
+  if (!text.trim().includes('\n')) return null
+  for (const source of [...sources.values()].reverse()) {
+    const slice = sourceSlice(text, source)
+    if (slice) return slice === text ? null : slice
+  }
+  return null
+}
+
+async function swapClipboard($: EngineInterface) {
+  // An image-only clipboard has no text type, so wl-paste exits non-zero and nothing is written.
+  const clipboard = await $.process.run(['wl-paste', '--no-newline', '--type', 'text'], { timeoutMs: 1000 }).catch(() => null)
+  if (clipboard?.exitCode !== 0) return
+  const slice = sourceOfClipboard(clipboard.stdout)
+  if (slice === null) return
+  const now = await $.clock.now()
+  if (now - (written.get(slice) ?? -Infinity) < REWRITE_MS) return
+  written.set(slice, now)
+  if (written.size > 20) written.delete(written.keys().next().value ?? '')
+  await $.ui.copy({ text: slice })
+}
+
+// Runs for the session's life. Resolves false when wl-paste cannot start or stops by itself (no Wayland session), so the
+// caller falls back to polling the selection; true when a reload replaced it.
+async function watchClipboard($: EngineInterface): Promise<boolean> {
+  const watch = $.process.spawn({ argv: ['wl-paste', '--type', 'text', '--watch', 'echo', 'changed'] })
+  clipboardWatch = watch
+  let isBusy = false
+  let isAgain = false
+  try {
+    for await (const piece of watch) {
+      if (piece.stream !== 'stdout') continue
+      if (isBusy) {
+        isAgain = true
+        continue
+      }
+      isBusy = true
+      void (async () => {
+        do {
+          isAgain = false
+          await swapClipboard($).catch(() => undefined)
+        } while (isAgain)
+      })().finally(() => {
+        isBusy = false
+      })
+    }
+  } catch {
+    return clipboardWatch !== watch
+  }
+  return clipboardWatch !== watch
+}
 
 async function copySelectionSource($: EngineInterface) {
   const selected = await $.ui.selection().catch(() => undefined)
   if (selected === undefined || selected.text.trim() === '') {
     lastSelection = undefined
-    pending = undefined
     return
   }
-  if (selected.text !== lastSelection) {
-    lastSelection = selected.text
-    pending = undefined
-    // A word or a phrase inside one line is wanted exactly as seen; source markup such as `/colors` in backticks only
-    // gets in the way there. Only a selection over several lines has wrap breaks and lost list markers worth replacing.
-    if (!selected.text.trim().includes('\n')) return
-    const { text, isSource } = copyableText(selected)
-    if (!isSource || text === selected.text) return
-    pending = { selected: selected.text, text, polls: GUARD_POLLS }
-    canReadClipboard ??= (await $.process.run(['wl-paste', '--version'], { timeoutMs: 500 }).catch(() => null))?.exitCode === 0
-    if (!canReadClipboard) {
-      await $.ui.copy({ text })
-      $.clock.after(RECOPY_MS, async () => {
-        const still = await $.ui.selection().catch(() => undefined)
-        if (still?.text === selected.text) await $.ui.copy({ text })
-      })
-      return
-    }
-  }
-  if (pending === undefined || !canReadClipboard || pending.polls-- <= 0) return
-  const { text } = pending
-  // An image-only clipboard has no text type, so wl-paste exits non-zero and nothing is written.
-  const clipboard = await $.process.run(['wl-paste', '--no-newline', '--type', 'text'], { timeoutMs: 500 }).catch(() => null)
-  if (clipboard?.exitCode !== 0 || clipboard.stdout === text || !isScreenCopy(clipboard.stdout, pending.selected)) return
+  if (selected.text === lastSelection) return
+  lastSelection = selected.text
+  if (!selected.text.trim().includes('\n')) return
+  const { text, isSource } = copyableText(selected)
+  if (!isSource || text === selected.text) return
   await $.ui.copy({ text })
+  $.clock.after(RECOPY_MS, async () => {
+    const still = await $.ui.selection().catch(() => undefined)
+    if (still?.text === selected.text) await $.ui.copy({ text })
+  })
 }
 
 // A reply is drawn again on every scroll, hover and redraw, though its text rarely changed. For a long reply, re-deriving
@@ -280,8 +319,12 @@ export const register: Register = on => {
     for (const command of commands) await $.command.register(command).catch(() => undefined)
     await loadColorMode($).catch(() => undefined)
     selectionWatch?.cancel()
+    selectionWatch = undefined
     lastSelection = undefined
-    selectionWatch = $.clock.every(SELECTION_POLL_MS, () => void copySelectionSource($))
+    void clipboardWatch?.return(undefined)
+    void watchClipboard($).then(isWatched => {
+      if (!isWatched) selectionWatch = $.clock.every(SELECTION_POLL_MS, () => void copySelectionSource($))
+    })
     themeWatch?.cancel()
     themeWatch = watchTheme($, places.home)
 
@@ -467,16 +510,11 @@ export const register: Register = on => {
 
     let body
     if (!isFolding) {
-      // Unfolded replies get no button row: a copy button appears in the top-right corner only on mouse hover.
+      // Unfolded replies get no button: copying the screen text already puts the source on the clipboard (watchClipboard).
       body = (
         <Box key={`${e.requestId}:msg`} flexDirection="column">
           {drawBody()}
           {stickyBox}
-          <Box position="absolute" top={0} right={0} display="none" hover={{ display: 'flex' }}>
-            <Button key={`${e.requestId}:copy`} plain onPress={copyAll}>
-              <Text dimColor>⧉ 複製</Text>
-            </Button>
-          </Box>
         </Box>
       )
     } else if (isOpen) {

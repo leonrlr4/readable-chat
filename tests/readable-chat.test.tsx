@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 
 import { parseAnsi } from '../hooks/ansi'
 import { linkify, sourceLinks } from '../hooks/links'
-import { cleanSelection, isScreenCopy, sourceSlice } from '../hooks/copy'
+import { cleanSelection, sourceSlice } from '../hooks/copy'
 import { cardifyTables, cardifyWideTables, codeBlocks, displayWidth, fold, minWidth } from '../hooks/format'
 
 const WIDE = [
@@ -135,7 +135,7 @@ test('spans of one style join; blanks join when it would not show; a link marker
 test('links drawn by leaf map back to the source URL', () => {
   const lines = parseAnsi('看 \x1b[38;2;85;148;235m#\x1b[0m\x1b[38;2;88;152;238;4m部署手冊\x1b[0m 再問\n')
   const [line] = linkify(lines, '看 [部署手冊](https://example.com/runbook) 再問', PLACES)
-  expect(line?.filter(span => span.href).map(span => span.text)).toEqual(['#', '部署手冊'])
+  expect(line?.filter(span => span.href).map(span => span.text)).toEqual(['部署手冊'])
   expect(line?.[2]?.href).toBe('https://example.com/runbook')
 })
 
@@ -254,12 +254,41 @@ test('a selection inside a code block keeps its fences', () => {
   expect(sourceSlice(selected, source)).toBe('```sh\nwl-copy < a.txt\nls\n```')
 })
 
-test('a multiplexer copy of the selection counts as the screen text, another copy does not', () => {
-  const selected = '  1. #12 and parser.ts: thanks for fixing it\n  2. Smoke test: passing'
-  const herdr = '  1. #12 and parser.ts: thanks for fixing it     \n  2. Smoke test: passing     '
-  expect(isScreenCopy(herdr, selected)).toBe(true)
-  expect(isScreenCopy('https://example.com/run/1', selected)).toBe(false)
-  expect(isScreenCopy('', '')).toBe(false)
+test('a screen copy with padding and a copy button traces back to its source', () => {
+  const source = 'Hey, you can start the runs.\n\n1) #12 and `parser.ts`: thanks for fixing it.\n2) Smoke test: passing on main.'
+  const herdr = [
+    '⏺ Hey, you can start the runs.                                  ⧉ 複製',
+    '',
+    '  1. #12 and parser.ts: thanks for fixing it.     ',
+    '  2. Smoke test: passing on main.     ',
+  ].join('\n')
+  expect(sourceSlice(herdr, source)).toBe(source)
+  expect(sourceSlice('https://example.com/run/1\nsomething else entirely', source)).toBeNull()
+})
+
+test('a screen copy with the sticky heading drawn over several rows still finds its source', () => {
+  const source = [
+    '## 複製時能拿回原文',
+    '',
+    '選取畫面上的字複製時，剪貼簿裡拿到的是 leaf 畫出來的版本，不是原文：',
+    '',
+    '- 有序清單的 `1)` 變成 `1.`，貼進 Slack 後會被轉成清單。',
+    '- `snake_case` 這類名稱前後的反引號消失，底線被 Slack 當成斜體。',
+    '- leaf 為了塞進螢幕寬度自動換的行，複製後變成真的換行。',
+    '',
+    '現在 mod 監看剪貼簿，只要剪貼簿的內容能對回某則回覆的原文，就換成原文。',
+  ].join('\n')
+  const screen = [
+    '  複製時能拿回原文',
+    '  ────────────────',
+    '   ▸ 複製時能拿回原文 ，剪貼簿裡拿到的是 leaf 畫出來的版本，不是原文：',
+    '  • 有序清單的 1) 變成 1.，貼進 Slack 後會被轉成清單。',
+    '   ▸ 複製時能拿回原文 稱前後的反引號消失，底線被 Slack 當成斜體。',
+    '  • leaf 為了塞進螢幕寬度自動換的行，複製後變成真的換行。',
+    '   ▸ 複製時能拿回原文',
+    '  現在 mod 監看剪貼簿，只要剪貼簿的內容能對回某則回覆的原文，就換成原文。',
+  ].join('\n')
+  expect(sourceSlice(screen, source)).toBe(source)
 })
 
 test('a selection from elsewhere has no source', () => {
