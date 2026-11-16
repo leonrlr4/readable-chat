@@ -110,9 +110,9 @@ test('parses mmdr --size', () => {
 })
 
 test('alt names the diagram type', () => {
-  expect(mermaidAlt('%%{init: {}}%%\n\nsequenceDiagram\n  A->>B: hi')).toBe('mermaid 圖：sequenceDiagram')
-  expect(mermaidAlt('graph TD; A-->B')).toBe('mermaid 圖：graph')
-  expect(mermaidAlt('')).toBe('mermaid 圖')
+  expect(mermaidAlt('%%{init: {}}%%\n\nsequenceDiagram\n  A->>B: hi')).toBe('mermaid sequenceDiagram')
+  expect(mermaidAlt('graph TD; A-->B')).toBe('mermaid graph')
+  expect(mermaidAlt('')).toBe('mermaid')
 })
 
 test('renderMermaid: measures size, renders to box ratio, reads back PNG, deletes temp file', async () => {
@@ -125,13 +125,16 @@ test('renderMermaid: measures size, renders to box ratio, reads back PNG, delete
     source: { png: PNG_BASE64 },
     columns: 25,
     rows: 14,
-    alt: 'mermaid 圖：flowchart',
+    alt: 'mermaid flowchart',
     width: 640,
     height: 352,
   })
-  expect(runs[0]).toEqual(['mmdr', '-i', '-', '--size', '-t', 'dark'])
+  // Both mmdr runs carry the pie palette config, written once before the first one.
+  const config = runs.find(argv => argv[0] === 'sh')?.at(-1) ?? ''
+  const sized = runs.find(argv => argv[0] === 'mmdr')
+  expect(sized).toEqual(['mmdr', '-i', '-', '--size', '-t', 'dark', '-c', config])
   const draw = runs.find(argv => argv[0] === 'mmdr' && argv.includes('-o'))
-  expect(draw).toEqual(['mmdr', '-i', '-', '-o', path, '-e', 'png', '-t', 'dark', '-w', '500', '-H', '616'])
+  expect(draw).toEqual(['mmdr', '-i', '-', '-o', path, '-e', 'png', '-t', 'dark', '-c', config, '-w', '500', '-H', '616'])
   expect(reads).toEqual([path])
   expect(runs.at(-1)).toEqual(['rm', '-f', path])
 
@@ -153,7 +156,9 @@ test('renderMermaid: mmdr parse failure returns null without creating a temp fil
   clearMermaidCache()
   const { $, runs } = fakeEngine(() => fail(), PNG_BASE64)
   expect(await renderMermaid($, 'graph TD; A-->', { columns: 80, isDark: true })).toBe(null)
-  expect(runs.map(argv => argv[0])).toEqual(['mmdr'])
+  // Only the palette config's mktemp runs before mmdr; no PNG temp file is made.
+  expect(runs.filter(argv => argv[0] === 'mmdr')).toHaveLength(1)
+  expect(runs.some(argv => argv[0] === 'mktemp' && argv.some(arg => arg.endsWith('.png')))).toBe(false)
 })
 
 test('renderMermaid: returns null when mmdr is not on PATH', async () => {

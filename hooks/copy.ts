@@ -116,3 +116,90 @@ export function cleanSelection(selected: string): string {
 
   return out.join('\n').replace(/\n{3,}/g, '\n\n').trim()
 }
+
+// Letters and digits survive leaf's rendering; markup, borders, bullets and wrap points do not. Matching on them alone
+// finds where a selection of the rendered reply came from in its markdown source.
+const WORD = /[\p{L}\p{N}]/u
+const EDGE = 16
+const MARKUP = '*_~`'
+
+type Words = { key: string; at: number[] }
+
+function words(text: string): Words {
+  let key = ''
+  const at: number[] = []
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i] ?? ''
+    if (!WORD.test(char)) continue
+    key += char
+    at.push(i)
+  }
+  return { key, at }
+}
+
+// A selection is matched against up to 50 replies, on every poll while it is being dragged; each reply's words are worked
+// out once instead of once per poll (about 1 ms for a 70 KB reply), and the selection's once per selection.
+const WORDS_CACHE_SIZE = 60
+const sourceWords = new Map<string, Words>()
+let selectionWords: { selected: string; key: string } | undefined
+
+function wordsOfSource(source: string): Words {
+  const hit = sourceWords.get(source)
+  if (hit) return hit
+  const found = words(source)
+  if (sourceWords.size >= WORDS_CACHE_SIZE) sourceWords.delete(sourceWords.keys().next().value ?? '')
+  sourceWords.set(source, found)
+  return found
+}
+
+function wordsOfSelection(selected: string): string {
+  if (selectionWords?.selected !== selected) selectionWords = { selected, key: words(cleanSelection(selected)).key }
+  return selectionWords.key
+}
+
+// The stretch of `source` the selected rendered text came from, so a copy keeps the backticks around `version_no` and the
+// lines leaf only wrapped to fit the screen. A selection over several lines widens to whole source lines (a list marker or
+// a code fence stays with its line); one inside a line widens only over markup touching its ends. Null when not found.
+export function sourceSlice(selected: string, source: string): string | null {
+  const wanted = wordsOfSelection(selected)
+  if (wanted.length === 0) return null
+  const { key, at } = wordsOfSource(source)
+
+  let start = key.indexOf(wanted)
+  let end = start + wanted.length
+  if (start < 0) {
+    // leaf adds text the source lacks (a link's URL, a table turned into cards), so match the two ends separately.
+    if (wanted.length < EDGE * 2) return null
+    start = key.indexOf(wanted.slice(0, EDGE))
+    const tail = start < 0 ? -1 : key.indexOf(wanted.slice(-EDGE), start)
+    if (tail < 0) return null
+    end = tail + EDGE
+    if (end - start > wanted.length * 1.5 + 50) return null
+  }
+
+  let from = at[start] ?? 0
+  let to = (at[end - 1] ?? 0) + 1
+  if (source.slice(from, to).includes('\n')) {
+    from = source.lastIndexOf('\n', from - 1) + 1
+    const lineEnd = source.indexOf('\n', to)
+    to = lineEnd < 0 ? source.length : lineEnd
+    // A selection that starts or ends inside a code block takes the fence line on that side too.
+    const before = source.slice(0, from)
+    if ((before.match(/^```/gm)?.length ?? 0) % 2 === 1) from = before.lastIndexOf('```')
+    if ((source.slice(0, to).match(/^```/gm)?.length ?? 0) % 2 === 1) {
+      const close = source.indexOf('\n```', to)
+      if (close >= 0) to = close + 4
+    }
+  } else {
+    while (from > 0 && MARKUP.includes(source[from - 1] ?? '')) from--
+    while (to < source.length && MARKUP.includes(source[to] ?? '')) to++
+  }
+  return source.slice(from, to).trim()
+}
+
+// Whether the clipboard holds a copy of the rendered selection, as a terminal or multiplexer writes it on mouse release:
+// the same letters and digits, whatever indentation, padding or wrapping it kept.
+export function isScreenCopy(clipboard: string, selected: string): boolean {
+  const wanted = words(selected).key
+  return wanted.length > 0 && words(clipboard).key === wanted
+}

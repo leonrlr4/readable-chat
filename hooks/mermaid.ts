@@ -39,13 +39,14 @@ const DEFAULT_MAX_ROWS = 40
 
 // Image caps columns and rows at 255; a bytes source can be at most 2 MiB after decoding.
 const MAX_CELLS = 255
-const MAX_PNG_BYTES = 2 * 1024 * 1024
+export const MAX_PNG_BYTES = 2 * 1024 * 1024
 
 // While streaming, the same code arrives repeatedly; caching the Promise lets concurrent requests share one render.
 const cache = new Map<string, Promise<MermaidImage | null>>()
 const CACHE_LIMIT = 100
 
 export function clearMermaidCache(): void {
+  configPaths.clear()
   cache.clear()
 }
 
@@ -134,7 +135,7 @@ export function mermaidAlt(code: string): string {
     .map(line => line.trim())
     .find(line => line !== '' && !line.startsWith('%%'))
   const kind = first?.split(/[\s;]/)[0] ?? ''
-  return kind === '' ? 'mermaid 圖' : `mermaid 圖：${kind}`
+  return kind === '' ? 'mermaid' : `mermaid ${kind}`
 }
 
 export function renderMermaid($: MermaidEngine, code: string, options: MermaidOptions): Promise<MermaidImage | null> {
@@ -148,6 +149,38 @@ export function renderMermaid($: MermaidEngine, code: string, options: MermaidOp
   return pending
 }
 
+// mmdr's dark theme derives pie slices from its near-black primary colors, so a slice can vanish into a dark terminal;
+// a fixed palette keeps every slice readable, with section labels drawn in the opposite tone.
+// Passed as a config file (-c): mmdr reads pie1..pie12 from there but ignores them in a %%{init}%% directive (0.3.1).
+const PALETTES = {
+  dark: ['#7aa2f7', '#e0af68', '#9ece6a', '#f7768e', '#bb9af7', '#7dcfff', '#ff9e64', '#73daca', '#c0caf5', '#2ac3de', '#d4b483', '#db4b4b'],
+  light: ['#2e7de9', '#b15c00', '#587539', '#c64343', '#7847bd', '#007197', '#965027', '#387068', '#6172b0', '#118c74', '#8c6c3e', '#a8323a'],
+}
+
+function themeConfig(isDark: boolean): string {
+  const colors = isDark ? PALETTES.dark : PALETTES.light
+  const vars: Record<string, string> = { pieSectionTextColor: isDark ? '#1a1b26' : '#ffffff' }
+  colors.forEach((color, i) => (vars[`pie${i + 1}`] = color))
+  return JSON.stringify({ themeVariables: vars })
+}
+
+// One config file per tone, written once per process; on failure mmdr runs with its own colors.
+const configPaths = new Map<boolean, Promise<string | null>>()
+
+export function configPath($: MermaidEngine, isDark: boolean): Promise<string | null> {
+  const known = configPaths.get(isDark)
+  if (known) return known
+  const pending = (async () => {
+    const temp = await $.process.run(['mktemp', '--tmpdir', `readable-chat-mmdr-${isDark ? 'dark' : 'light'}-XXXXXX.json`])
+    const path = temp.stdout.trim()
+    if (temp.exitCode !== 0 || !path.startsWith('/')) return null
+    const written = await $.process.run(['sh', '-c', 'printf %s "$1" > "$2"', 'sh', themeConfig(isDark), path])
+    return written.exitCode === 0 ? path : null
+  })().catch(() => null)
+  configPaths.set(isDark, pending)
+  return pending
+}
+
 async function render(
   $: MermaidEngine,
   code: string,
@@ -157,9 +190,11 @@ async function render(
 ): Promise<MermaidImage | null> {
   const source = withTransparentBackground(code)
   const theme = isDark ? 'dark' : 'default'
+  const config = await configPath($, isDark)
+  const colors = config ? ['-c', config] : []
 
   // First ask for the natural size, compute the cell counts, then render at the box's proportions; given a width and height, mmdr centers with padding rather than stretching.
-  const sized = await $.process.run(['mmdr', '-i', '-', '--size', '-t', theme], { stdin: source, timeoutMs: 5000 })
+  const sized = await $.process.run(['mmdr', '-i', '-', '--size', '-t', theme, ...colors], { stdin: source, timeoutMs: 5000 })
   if (sized.exitCode !== 0) return null
   const natural = parseSize(sized.stdout)
   if (!natural) return null
@@ -174,7 +209,7 @@ async function render(
     const width = box.columns * CELL.width * RENDER_SCALE
     const height = box.rows * CELL.height * RENDER_SCALE
     const drawn = await $.process.run(
-      ['mmdr', '-i', '-', '-o', path, '-e', 'png', '-t', theme, '-w', String(width), '-H', String(height)],
+      ['mmdr', '-i', '-', '-o', path, '-e', 'png', '-t', theme, ...colors, '-w', String(width), '-H', String(height)],
       { stdin: source, timeoutMs: 10000 },
     )
     if (drawn.exitCode !== 0) return null

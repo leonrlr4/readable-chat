@@ -5,7 +5,7 @@ import type { Line, Span } from './ansi'
 
 const FENCE = /^\s*(```|~~~)/
 const MD_LINK = /(?<!!)\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g
-const URL = /\bhttps?:\/\/[^\s<>()\[\]`'"，。、；：]+[^\s<>()\[\]`'"，。、；：.,;:!?]/g
+const URL = /\bhttps?:\/\/[^\s<>()\[\]`'"，。、；：（）]+[^\s<>()\[\]`'"，。、；：（）.,;:!?]/g
 // At least one `/` and a file extension, or starts with `~/`, `./`, or `/`; a line number `:42` or `:42:7` stays in the displayed text and is not part of the href.
 const PATH = /(?<![\w/.:-])(?:~\/|\.{1,2}\/|\/)?(?:[\w.@+-]+\/)+[\w.@+-]+\.[A-Za-z0-9]+(?=(?::\d+){0,2}(?![\w/]))/g
 

@@ -1,6 +1,8 @@
+import type { On } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 
-import { clip, countDiff, countLines, firstLine, shortPath, summarizeTool, summaryText } from '../hooks/tools'
+import { clearImageCache } from '../hooks/images'
+import { clip, countDiff, countLines, firstLine, isImagePath, shortPath, summarizeTool, summaryText } from '../hooks/tools'
 
 const CWD = '/repo'
 
@@ -143,6 +145,19 @@ test('failed rows and ctrl+o expanded rows render as the engine draws them', asy
   await expanded.unmount()
 })
 
+test('a call with no output yet, such as a Write still being streamed, renders as the engine draws it', async ($, on) => {
+  on('ui.render', ($, e) => {
+    const { Text } = $.ui.resolve(e)
+
+    return <Text>engine</Text>
+  })
+  const streaming = { ...EDIT_ROW, tool_use_id: 'tu-4', tool: 'Write', input: {}, output: undefined }
+  const row = await $.ui.mount({ ...TOOL_ROW, requestId: 'tu-4', props: streaming })
+  expect(await row.find({ type: 'Button', key: 'tools:open' })).toBeFalsy()
+  expect((await row.find({ type: 'Text', text: /engine/ }))?.text).toBe('engine')
+  await row.unmount()
+})
+
 test('collapsed rows hide the result block; with /tools off the engine draws them', async ($, on) => {
   on('ui.render', ($, e) => {
     const { Text } = $.ui.resolve(e)
@@ -158,4 +173,92 @@ test('collapsed rows hide the result block; with /tools off the engine draws the
   const shown = await $.ui.mount(result)
   expect((await shown.find({ type: 'Text', text: /engine/ }))?.text).toBe('engine')
   await shown.unmount()
+})
+
+test('Skill rows are hidden in focus mode, failed ones are not', async ($, on) => {
+  on('ui.render', ($, e) => {
+    const { Text } = $.ui.resolve(e)
+
+    return <Text>engine</Text>
+  })
+  const skill = { ...EDIT_ROW, tool: 'Skill', input: { skill: 'no-ai-slop' }, output: 'Successfully loaded skill' }
+  const hidden = await $.ui.mount({ ...TOOL_ROW, props: skill })
+  expect(await hidden.find({ type: 'Text', text: /engine/ })).toBeFalsy()
+  await hidden.unmount()
+  const failed = await $.ui.mount({ ...TOOL_ROW, requestId: 'tu-3', props: { ...skill, tool_use_id: 'tu-3', isErrored: true } })
+  expect(await failed.find({ type: 'Text', text: /engine/ })).toBeTruthy()
+  await failed.unmount()
+})
+
+test('Read of an image: summary names the file and its size, extension decides the thumbnail', () => {
+  const output = { type: 'image', file: { base64: 'AAAA', type: 'image/png', originalSize: 9, dimensions: { originalWidth: 640, originalHeight: 352 } } }
+  const summary = summarizeTool('Read', { file_path: '/repo/shots/a.png' }, output, CWD)
+  expect(summary && summaryText(summary)).toBe('❐ 讀了 shots/a.png  （圖片 640×352）')
+  expect(isImagePath('/a/B.JPEG')).toBe(true)
+  expect(isImagePath('/a/b.ts')).toBe(false)
+})
+
+// PNG header for 640×352 (only IHDR is read); same fixture as images.test.ts.
+const PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAoAAAAFgCAYAAAArYcg8AAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII='
+const CACHE = '/home/me/.cache/readable-chat/images'
+
+function ran(exitCode: number, stdout = '') {
+  return { value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+}
+
+// Fake host for loadImage: files maps a path to its `stat` line.
+function fakeHost(on: On, files: Record<string, string>) {
+  on('process.run', (_, e) => {
+    const argv = e.argv
+    if (argv[0] === 'stat') {
+      const line = files[argv.at(-1) ?? '']
+      return line ? ran(0, `${line}\n`) : ran(1)
+    }
+    if (argv[0] === 'sh') return ran(0, CACHE)
+    if (argv[0] === 'sha256sum') return ran(0, `${'b'.repeat(64)}  -\n`)
+    if (argv[0] === 'file') return ran(0, 'image/png\n')
+    if (argv[0] === 'magick' && argv[1] === 'identify') return ran(0, '640 352\n')
+    if (argv[0] === 'magick') {
+      files[(argv.at(-1) ?? '').replace(/^PNG:/, '')] = 'regular file\t5000\t1'
+      return ran(0)
+    }
+    return ran(0)
+  })
+  on('fs.read', () => ({ value: { base64: PNG_BASE64 } }))
+}
+
+const IMAGE_ROW = {
+  ...EDIT_ROW,
+  tool: 'Read',
+  input: { file_path: '/repo/shots/a.png' },
+  output: { type: 'image', file: { base64: 'AAAA', type: 'image/png', originalSize: 9 } },
+}
+
+test('collapsed Read of a PNG draws a thumbnail at most 8 rows tall under the summary', async ($, on) => {
+  clearImageCache()
+  fakeHost(on, { '/repo/shots/a.png': 'regular file\t12345\t1700000000' })
+  on('ui.render', ($, e) => {
+    const { Text } = $.ui.resolve(e)
+
+    return <Text>engine</Text>
+  })
+  const ui = await $.ui.mount({ ...TOOL_ROW, props: IMAGE_ROW })
+  expect((await ui.find({ type: 'Button', key: 'tools:open' }))?.text).toContain('a.png')
+  const image = await ui.find({ type: 'Image' })
+  expect(image).toBeTruthy()
+  expect(image && Number(image.props.rows) <= 8).toBe(true)
+  expect(image?.props.alt).toBe('a.png')
+  await ui.press({ key: 'tools:open' })
+  expect(await ui.find({ type: 'Image' })).toBeFalsy()
+  expect((await ui.find({ type: 'Text', text: /engine/ }))?.text).toBe('engine')
+  await ui.unmount()
+})
+
+test('collapsed Read of a missing image shows the reason instead of a thumbnail', async ($, on) => {
+  clearImageCache()
+  fakeHost(on, {})
+  const ui = await $.ui.mount({ ...TOOL_ROW, props: { ...IMAGE_ROW, input: { file_path: '/repo/gone.png' } } })
+  expect(await ui.find({ type: 'Image' })).toBeFalsy()
+  expect((await ui.find({ type: 'Text', text: /縮圖/ }))?.text).toBe('（縮圖：檔案不存在）')
+  await ui.unmount()
 })

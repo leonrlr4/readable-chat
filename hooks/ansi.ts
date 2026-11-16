@@ -78,6 +78,35 @@ function apply(style: Style, params: number[]): Style {
   return next
 }
 
+const STYLE_KEYS = ['color', 'backgroundColor', 'bold', 'dimColor', 'italic', 'underline', 'strikethrough', 'inverse'] as const
+
+function isSameStyle(a: Style, b: Style): boolean {
+  return a === b || STYLE_KEYS.every(key => a[key] === b[key])
+}
+
+// Spaces look the same in any foreground color, bold or dim; only these show on them.
+function isBlankInvisible(style: Style): boolean {
+  return !style.backgroundColor && !style.underline && !style.strikethrough && !style.inverse
+}
+
+const BLANK = /^\s+$/
+
+// leaf wraps each word and each space in its own color and reset, so a line of English prose came out as ~50 spans of one
+// style, each drawn as its own Text on every redraw. Neighbours of the same style are joined into one span, and so is a
+// run of spaces with a neighbour when the difference would not show on them. A `#` stays on its own: it is how leaf
+// marks a link, and linkify finds the link's URL by it.
+function push(line: Line, text: string, style: Style) {
+  const last = line[line.length - 1]
+  if (!last || last.text === '#' || text === '#') {
+    line.push({ text, style })
+    return
+  }
+  const isBlankJoin = isBlankInvisible(last.style) && isBlankInvisible(style)
+  if (isSameStyle(last.style, style) || (isBlankJoin && BLANK.test(text))) last.text += text
+  else if (isBlankJoin && BLANK.test(last.text)) line[line.length - 1] = { text: last.text + text, style }
+  else line.push({ text, style })
+}
+
 export function parseAnsi(output: string): Line[] {
   const lines: Line[] = []
   let style: Style = {}
@@ -86,12 +115,12 @@ export function parseAnsi(output: string): Line[] {
     let at = 0
     for (const match of raw.matchAll(SGR)) {
       const index = match.index ?? 0
-      if (index > at) line.push({ text: raw.slice(at, index), style })
-      const params = (match[1] || '0').split(';').map(Number)
-      style = apply(style, params)
+      if (index > at) push(line, raw.slice(at, index), style)
+      const params = match[1] ?? ''
+      style = params === '0' || params === '' ? {} : apply(style, params.split(';').map(Number))
       at = index + match[0].length
     }
-    if (at < raw.length) line.push({ text: raw.slice(at), style })
+    if (at < raw.length) push(line, raw.slice(at), style)
     lines.push(line)
   }
   return lines

@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 
 import { parseAnsi } from '../hooks/ansi'
 import { linkify, sourceLinks } from '../hooks/links'
-import { cleanSelection } from '../hooks/copy'
+import { cleanSelection, isScreenCopy, sourceSlice } from '../hooks/copy'
 import { cardifyTables, cardifyWideTables, codeBlocks, displayWidth, fold, minWidth } from '../hooks/format'
 
 const WIDE = [
@@ -103,7 +103,34 @@ test('renders the reply from leaf output when leaf is available', async ($, on) 
   await ui.unmount()
 })
 
+test('a reply drawn again reuses what it drew; new text draws anew', async ($, on) => {
+  let runs = 0
+  on('process.run', (_, e) => {
+    if (e.argv[0] === 'leaf') runs++
+    const stdout = e.argv[0] === 'leaf' ? (runs === 1 ? '第一版\n' : '第二版\n') : ''
+    return { value: { exitCode: e.argv[0] === 'leaf' ? 0 : 1, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  const message = { ...MESSAGE, requestId: 'kept-1' }
+  for (const text of ['第一版', '第一版', '第二版']) {
+    const ui = await $.ui.mount({ ...message, props: { text, isFirstOfReply: true } })
+    expect((await ui.find({ type: 'Text', text: new RegExp(text) }))?.text).toContain(text)
+    await ui.unmount()
+  }
+  expect(runs).toBe(2)
+})
+
 const PLACES = { cwd: '/repo', home: '/home/me' }
+
+test('spans of one style join; blanks join when it would not show; a link marker stays alone', () => {
+  const grey = '\x1b[38;2;208;210;218m'
+  const line = `${grey}Done\x1b[0m${grey} \x1b[0m${grey}when\x1b[0m \x1b[1msaved\x1b[0m ${grey}#\x1b[0m\x1b[4mdocs\x1b[0m`
+  expect(parseAnsi(line)[0]).toEqual([
+    { text: 'Done when ', style: { color: '#d0d2da' } },
+    { text: 'saved ', style: { bold: true } },
+    { text: '#', style: { color: '#d0d2da' } },
+    { text: 'docs', style: { underline: true } },
+  ])
+})
 
 test('links drawn by leaf map back to the source URL', () => {
   const lines = parseAnsi('看 \x1b[38;2;85;148;235m#\x1b[0m\x1b[38;2;88;152;238;4m部署手冊\x1b[0m 再問\n')
@@ -210,6 +237,35 @@ test('strips borders, line numbers and wraps from selected text', () => {
   )
 })
 
+test('a selection over wrapped lines copies its source lines, backticks kept', () => {
+  const source = ['回覆說明。', '', '- 欄位 `version_no` 和 `size_bytes` 要一起改，', '  不然 migration 會失敗。', '- 另一點'].join('\n')
+  const selected = ['  • 欄位 version_no 和 size_bytes 要一起改，不然', '    migration 會失敗。'].join('\n')
+  expect(sourceSlice(selected, source)).toBe('- 欄位 `version_no` 和 `size_bytes` 要一起改，\n  不然 migration 會失敗。')
+})
+
+test('a selection inside one line widens over the markup at its ends', () => {
+  expect(sourceSlice('version_no', '改 `version_no` 欄位')).toBe('`version_no`')
+  expect(sourceSlice('重點', '這是**重點**。')).toBe('**重點**')
+})
+
+test('a selection inside a code block keeps its fences', () => {
+  const source = '看這段：\n\n```sh\nwl-copy < a.txt\nls\n```\n\n完'
+  const selected = ['  ┌─ sh ────────────┐', '  │1│ wl-copy < a.txt │', '  │2│ ls              │', '  └─┴───────────────┘'].join('\n')
+  expect(sourceSlice(selected, source)).toBe('```sh\nwl-copy < a.txt\nls\n```')
+})
+
+test('a multiplexer copy of the selection counts as the screen text, another copy does not', () => {
+  const selected = '  1. #12 and parser.ts: thanks for fixing it\n  2. Smoke test: passing'
+  const herdr = '  1. #12 and parser.ts: thanks for fixing it     \n  2. Smoke test: passing     '
+  expect(isScreenCopy(herdr, selected)).toBe(true)
+  expect(isScreenCopy('https://example.com/run/1', selected)).toBe(false)
+  expect(isScreenCopy('', '')).toBe(false)
+})
+
+test('a selection from elsewhere has no source', () => {
+  expect(sourceSlice('完全不相干的字', '回覆內容')).toBeNull()
+})
+
 test('folded reply has outline buttons and copy source', async ($, on) => {
   const copied: string[] = []
   on('ui.copy', (_, e) => {
@@ -252,4 +308,58 @@ test('when the reply top scrolls off screen, the last passed heading pins to the
   })
   expect((await ui.find({ type: 'Text', text: /▸ 做法/ }))?.text).toContain('做法')
   await ui.unmount()
+})
+
+test('replies from earlier turns draw dim once the next prompt is sent', async ($, on) => {
+  on('process.run', (_, e) => ({
+    value: {
+      exitCode: e.argv[0] === 'leaf' ? 0 : 1,
+      stdout: '舊的回覆\n',
+      stderr: '',
+      isStdoutTruncated: false,
+      isStderrTruncated: false,
+    },
+  }))
+  on('prompt.submit', (_, e) => ({ text: e.text }))
+  const ui = await $.ui.mount({ ...MESSAGE, requestId: 'msg-dim', props: { text: '舊的回覆', isFirstOfReply: true } })
+  // leaf's line is a truncating Text around one Text per span; the span carries the style.
+  const isDim = async () => (await ui.findAll({ type: 'Text', text: '舊的回覆' })).some(found => found.props.dimColor === true)
+  expect(await isDim()).toBe(false)
+  await $.prompt.submit({ text: '下一個問題', wait: false, origin: { kind: 'composer' } })
+  expect(await isDim()).toBe(true)
+  await ui.unmount()
+})
+
+test('typed prompts get a rule above them; the turn-duration line is hidden', async ($, on) => {
+  on('ui.render', ($, e) => {
+    const { Text } = $.ui.resolve(e)
+
+    return <Text>engine</Text>
+  })
+  const base = { plugin: 'readable-chat', surface: 'terminal', viewport: { columns: 20, rows: 40 } } as const
+  const prompt = await $.ui.mount({
+    ...base,
+    component: 'UserMessage',
+    requestId: 'u-1',
+    props: { text: '問題', origin: { kind: 'composer' }, isExpanded: true },
+  })
+  expect((await prompt.find({ type: 'Text', text: /^─+$/ }))?.text).toBe('─'.repeat(19))
+  expect(await prompt.find({ type: 'Text', text: 'engine' })).toBeTruthy()
+  await prompt.unmount()
+  const notice = await $.ui.mount({
+    ...base,
+    component: 'UserMessage',
+    requestId: 'u-2',
+    props: { text: '通知', origin: { kind: 'task-notification' }, isExpanded: false },
+  })
+  expect(await notice.find({ type: 'Text', text: /^─+$/ })).toBeFalsy()
+  await notice.unmount()
+  const duration = await $.ui.mount({ ...base, component: 'TurnDuration', requestId: 't-1', props: { word: 'Worked', durationMs: 23000 } })
+  expect(await duration.find({ type: 'Text', text: 'engine' })).toBeFalsy()
+  await duration.unmount()
+  const run = { command: 'focus-mode', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 100 } } as const
+  expect(await $.command.run(run)).toEqual({ text: '專注模式：關' })
+  const shown = await $.ui.mount({ ...base, component: 'TurnDuration', requestId: 't-2', props: { word: 'Worked', durationMs: 23000 } })
+  expect(await shown.find({ type: 'Text', text: 'engine' })).toBeTruthy()
+  await shown.unmount()
 })
