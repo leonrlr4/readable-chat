@@ -146,6 +146,11 @@ export function renderMermaid($: MermaidEngine, code: string, options: MermaidOp
   const pending = render($, code, options.columns, maxRows, options.isDark).catch(() => null)
   if (cache.size >= CACHE_LIMIT) cache.delete(cache.keys().next().value ?? '')
   cache.set(key, pending)
+  // A failure can be passing (mmdr timing out while many renders run during streaming); forget it so a redraw retries.
+  // mmdr answers in milliseconds, so retrying code that never parses costs little.
+  void pending.then(image => {
+    if (image === null && cache.get(key) === pending) cache.delete(key)
+  })
   return pending
 }
 
@@ -171,7 +176,7 @@ export function configPath($: MermaidEngine, isDark: boolean): Promise<string | 
   const known = configPaths.get(isDark)
   if (known) return known
   const pending = (async () => {
-    const temp = await $.process.run(['mktemp', '--tmpdir', `readable-chat-mmdr-${isDark ? 'dark' : 'light'}-XXXXXX.json`])
+    const temp = await $.process.run(['mktemp', '--tmpdir', `readable-chat-mmdr-${isDark ? 'dark' : 'light'}-XXXXXX`])
     const path = temp.stdout.trim()
     if (temp.exitCode !== 0 || !path.startsWith('/')) return null
     const written = await $.process.run(['sh', '-c', 'printf %s "$1" > "$2"', 'sh', themeConfig(isDark), path])
@@ -202,7 +207,7 @@ async function render(
   if (!box) return null
 
   // stdout gets decoded as UTF-8 text, so the PNG can't come from there; it has to be written to a temp file first.
-  const temp = await $.process.run(['mktemp', '--tmpdir', 'readable-chat-mermaid-XXXXXX.png'])
+  const temp = await $.process.run(['mktemp', '--tmpdir', 'readable-chat-mermaid-XXXXXX'])
   const path = temp.stdout.trim()
   if (temp.exitCode !== 0 || !path.startsWith('/')) return null
   try {

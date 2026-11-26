@@ -3,6 +3,7 @@ import type { On } from 'claude-code'
 
 import { displayWidth } from './format'
 import { loadImage } from './images'
+import { places as replyPlaces } from './render'
 
 const isToolCollapseOn = atom({ plugin: 'readable-chat', key: 'isToolCollapseOn' } as const, true)
 const isToolOpen = atom({ plugin: 'readable-chat', key: 'isToolOpen' } as const, false)
@@ -74,9 +75,20 @@ function baseName(path: string): string {
   return path.slice(path.lastIndexOf('/') + 1)
 }
 
-export function shortPath(path: string, cwd: string): string {
+export function shortPath(path: string, cwd: string, home = ''): string {
   if (cwd !== '' && path.startsWith(`${cwd}/`)) return path.slice(cwd.length + 1)
+  if (home !== '' && path.startsWith(`${home}/`)) return `~${path.slice(home.length)}`
   return path
+}
+
+// Claude Code's per-session scratchpad: /private/tmp/claude-<uid>/<project>/<session uuid>/scratchpad. Its 80-odd columns
+// fill a collapsed Bash row before the command itself shows.
+const SCRATCHPAD = /(?:\/private)?\/tmp\/claude-\d+\/[^/\s]+\/[0-9a-f-]{36}\/scratchpad/g
+
+// The command with the scratchpad shortened and the home directory written as ~.
+export function shortCommand(command: string, home = ''): string {
+  const short = command.replace(SCRATCHPAD, '…/scratchpad')
+  return home === '' ? short : short.split(`${home}/`).join('~/')
 }
 
 function hunksOf(output: Record<string, unknown>): Hunk[] | undefined {
@@ -88,8 +100,8 @@ function hunksOf(output: Record<string, unknown>): Hunk[] | undefined {
   })
 }
 
-function summarizeEdit(input: Record<string, unknown>, output: Record<string, unknown>, cwd: string): ToolSummary {
-  const path = shortPath(text(output.filePath) || text(input.file_path), cwd)
+function summarizeEdit(input: Record<string, unknown>, output: Record<string, unknown>, cwd: string, home: string): ToolSummary {
+  const path = shortPath(text(output.filePath) || text(input.file_path), cwd, home)
   const hunks = hunksOf(output)
   // When there is no result yet (old transcripts did not store structuredPatch), estimate from the line counts of old/new_string.
   const diff = hunks ?? [
@@ -100,8 +112,8 @@ function summarizeEdit(input: Record<string, unknown>, output: Record<string, un
   return { head: `✎ 改了 ${path}`, added, removed, ...(output.staged === true ? { note: '待審核' } : {}) }
 }
 
-function summarizeWrite(input: Record<string, unknown>, output: Record<string, unknown>, cwd: string): ToolSummary {
-  const path = shortPath(text(output.filePath) || text(input.file_path), cwd)
+function summarizeWrite(input: Record<string, unknown>, output: Record<string, unknown>, cwd: string, home: string): ToolSummary {
+  const path = shortPath(text(output.filePath) || text(input.file_path), cwd, home)
   const content = text(output.content) || text(input.content)
   if (output.type === 'update') {
     const hunks = hunksOf(output)
@@ -117,8 +129,8 @@ export function firstLine(command: string): string {
   return lines.length > 1 ? `${lines[0]} …` : (lines[0] ?? '')
 }
 
-function summarizeBash(input: Record<string, unknown>, output: Record<string, unknown>): ToolSummary {
-  const head = `$ ${firstLine(text(input.command))}`
+function summarizeBash(input: Record<string, unknown>, output: Record<string, unknown>, home: string): ToolSummary {
+  const head = `$ ${firstLine(shortCommand(text(input.command), home))}`
   if (typeof output.backgroundTaskId === 'string') return { head, note: '在背景執行' }
   if (output.isImage === true) return { head, note: '輸出是圖片' }
   const lines = countLines(text(output.stdout)) + countLines(text(output.stderr))
@@ -126,9 +138,9 @@ function summarizeBash(input: Record<string, unknown>, output: Record<string, un
   return { head, note: lines === 0 ? '沒有輸出' : `輸出 ${lines} 行` }
 }
 
-function summarizeRead(input: Record<string, unknown>, output: Record<string, unknown>, cwd: string): ToolSummary {
+function summarizeRead(input: Record<string, unknown>, output: Record<string, unknown>, cwd: string, home: string): ToolSummary {
   const file = record(output.file)
-  const path = shortPath(text(file.filePath) || text(input.file_path), cwd)
+  const path = shortPath(text(file.filePath) || text(input.file_path), cwd, home)
   const head = `❐ 讀了 ${path}`
   switch (output.type) {
     case 'text': {
@@ -156,9 +168,9 @@ function summarizeRead(input: Record<string, unknown>, output: Record<string, un
   }
 }
 
-function summarizeGrep(input: Record<string, unknown>, output: Record<string, unknown>, cwd: string): ToolSummary {
+function summarizeGrep(input: Record<string, unknown>, output: Record<string, unknown>, cwd: string, home: string): ToolSummary {
   const where = text(input.path)
-  const head = `⌕ 搜尋 ${text(input.pattern)}${where === '' ? '' : ` 於 ${shortPath(where, cwd)}`}`
+  const head = `⌕ 搜尋 ${text(input.pattern)}${where === '' ? '' : ` 於 ${shortPath(where, cwd, home)}`}`
   const lines = count(output.numLines)
   if (output.mode === 'content' && lines !== undefined) return { head, note: `${lines} 行符合` }
   const files = count(output.numFiles)
@@ -174,20 +186,20 @@ function summarizeGlob(input: Record<string, unknown>, output: Record<string, un
 }
 
 // One-line summary for a tool call row; returns null for tools that are not collapsed.
-export function summarizeTool(tool: string, input: unknown, output: unknown, cwd = ''): ToolSummary | null {
+export function summarizeTool(tool: string, input: unknown, output: unknown, cwd = '', home = ''): ToolSummary | null {
   const args = record(input)
   const result = record(output)
   switch (tool) {
     case 'Edit':
-      return summarizeEdit(args, result, cwd)
+      return summarizeEdit(args, result, cwd, home)
     case 'Write':
-      return summarizeWrite(args, result, cwd)
+      return summarizeWrite(args, result, cwd, home)
     case 'Bash':
-      return summarizeBash(args, result)
+      return summarizeBash(args, result, home)
     case 'Read':
-      return summarizeRead(args, result, cwd)
+      return summarizeRead(args, result, cwd, home)
     case 'Grep':
-      return summarizeGrep(args, result, cwd)
+      return summarizeGrep(args, result, cwd, home)
     case 'Glob':
       return summarizeGlob(args, result)
     default:
@@ -261,7 +273,9 @@ export function registerTools(on: On): void {
     }
     if (!COLLAPSIBLE.has(props.tool) || !(await read($, isToolCollapseOn))) return next(e)
 
-    const summary = summarizeTool(props.tool, props.input, props.output, places.cwd)
+    // register.tsx reads $HOME at session.start; until then (a hot reload) home stays unshortened.
+    const home = replyPlaces.home.startsWith('/') ? replyPlaces.home : ''
+    const summary = summarizeTool(props.tool, props.input, props.output, places.cwd, home)
     if (summary === null) return next(e)
 
     const { Box, Button, Text } = $.ui.resolve(e)

@@ -224,9 +224,10 @@ export type DrawOptions = {
 }
 
 // Frames leaf draws for the blocks that become pictures, matched against a row's trimmed text.
-// A mermaid frame has no line-number gutter, so its bottom is `└────┘`; code frames (readable-image among them) end `└─┴───┘`.
+// A mermaid frame leaf draws as a diagram has no line-number gutter, so its bottom is `└────┘`; one leaf cannot draw
+// (xychart-beta in leaf 1.28) is a code frame, like readable-image, and ends `└─┴───┘`.
 const MERMAID_TOP = /^┌─ mermaid /
-const MERMAID_BOTTOM = /^└─*┘$/
+const MERMAID_BOTTOM = /^└─*(?:┴─*)?┘$/
 const IMAGE_TOP = new RegExp(`^┌─ ${IMAGE_LANG} `)
 // The one row inside a readable-image frame: gutter `│1│`, then the image's index that extractImages wrote into the fence.
 const IMAGE_INDEX = /^│\s*1│\s*(\d+)\s*│$/
@@ -330,9 +331,16 @@ export function pictureSource(ref: ImageRef): string {
   return ref.kind === 'local' || ref.kind === 'remote' ? `![${ref.alt}](${ref.src})` : ref.src
 }
 
-// Index of the row ending the frame that starts at row, or -1 when there is none (a frame cut off while streaming).
+// Any frame's bottom row; rows inside a frame end with its `│` border, so the first such row closes the frame.
+const ANY_FRAME_BOTTOM = /└[─┴]*┘$/
+
+// Index of the row ending the frame that starts at row, or -1 when there is none (a frame cut off while streaming, or one
+// that closes with a bottom other than expected). Stopping at the first bottom keeps a later frame from being swallowed.
 function frameEnd(lines: readonly Line[], row: number, bottom: RegExp): number {
-  for (let at = row + 1; at < lines.length; at++) if (bottom.test(plainLine(lines[at] ?? []))) return at
+  for (let at = row + 1; at < lines.length; at++) {
+    const plain = plainLine(lines[at] ?? [])
+    if (ANY_FRAME_BOTTOM.test(plain)) return bottom.test(plain) ? at : -1
+  }
   return -1
 }
 

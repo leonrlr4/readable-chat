@@ -4,7 +4,7 @@ import type { ImageRef } from '../types'
 import { findMathjax, prepareSvg, svgSize } from './math'
 import { configPath, parseSize } from './mermaid'
 
-// 「放大」 hands the picture to the desktop's own viewer (xdg-open), which zooms, pans and copies better than any cell grid.
+// 「放大」 hands the picture to the desktop's own viewer (xdg-open, or open on macOS), which zooms, pans and copies better than any cell grid.
 // Local files and URLs open as they are; mermaid and math have no file, so they are rendered once more, large and on an
 // opaque background a standalone window needs, into ~/.cache/readable-chat/zoom.
 
@@ -62,7 +62,7 @@ async function mathFile($: EngineInterface, tex: string, isDark: boolean, path: 
   return drawn.exitCode === 0
 }
 
-// What xdg-open should be given for this picture, or the reason there is nothing to give it.
+// What the viewer should be given for this picture, or the reason there is nothing to give it.
 async function target($: EngineInterface, ref: ImageRef, isDark: boolean): Promise<{ path: string } | { reason: string }> {
   if (ref.kind === 'local' || ref.kind === 'remote') return { path: ref.src }
   const dir = await zoomDir($)
@@ -73,13 +73,22 @@ async function target($: EngineInterface, ref: ImageRef, isDark: boolean): Promi
   return isDrawn ? { path } : { reason: '轉圖失敗' }
 }
 
-// Resolves to null once the viewer is launched, or a short reason for the toast. setsid -f detaches the viewer, so closing
-// Claude Code or herdr's pane does not close it, and the hook does not wait on the window.
+// Opens a file or URL with the desktop's handler. On Linux setsid -f detaches xdg-open, so closing Claude Code or herdr's
+// pane does not close the window and the hook does not wait on it. macOS has neither setsid nor xdg-open; its open
+// returns as soon as the app is asked, so it needs no detaching.
+export const OPEN_SCRIPT =
+  'if command -v xdg-open >/dev/null 2>&1; then setsid -f xdg-open "$1" >/dev/null 2>&1; else open "$1"; fi'
+
+export function openExternal($: EngineInterface, target: string, timeoutMs = 5000) {
+  return $.process.run(['sh', '-c', OPEN_SCRIPT, 'sh', target], { timeoutMs })
+}
+
+// Resolves to null once the viewer is launched, or a short reason for the toast.
 export async function openInViewer($: EngineInterface, ref: ImageRef, isDark: boolean): Promise<string | null> {
   try {
     const found = await target($, ref, isDark)
     if ('reason' in found) return found.reason
-    const run = await $.process.run(['sh', '-c', 'setsid -f xdg-open "$1" >/dev/null 2>&1', 'sh', found.path], { timeoutMs: 5000 })
+    const run = await openExternal($, found.path)
     return run.exitCode === 0 ? null : '無法開啟系統看圖程式'
   } catch {
     return '無法開啟系統看圖程式'

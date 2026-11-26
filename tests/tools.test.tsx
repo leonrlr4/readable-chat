@@ -84,6 +84,19 @@ test('Grep and Glob summaries', () => {
   expect(glob && summaryText(glob)).toBe('⌕ 找檔案 **/*.ts  （2 個檔案）')
 })
 
+test('Bash summary shortens the home directory and Claude scratchpad paths so the command shows', () => {
+  const scratchpad = '/private/tmp/claude-501/-Users-me-repo/991e25e7-729a-476a-ac63-f889717a649b/scratchpad'
+  const command = `S=${scratchpad}; bash $S/crack_test.sh > /home/me/out.txt`
+  expect(summarizeTool('Bash', { command }, { stdout: '' }, '/repo', '/home/me')?.head).toBe(
+    '$ S=…/scratchpad; bash $S/crack_test.sh > ~/out.txt',
+  )
+})
+
+test('Edit summary shows a file under home as ~/', () => {
+  const head = summarizeTool('Edit', { file_path: '/home/me/.p10k.zsh' }, { structuredPatch: [] }, '/repo', '/home/me')?.head
+  expect(head).toBe('✎ 改了 ~/.p10k.zsh')
+})
+
 test('other tools are not collapsed', () => {
   expect(summarizeTool('Agent', {}, {})).toBe(null)
 })
@@ -93,6 +106,9 @@ test('line counts, paths and clipping', () => {
   expect(countLines('a\nb\n\n')).toBe(2)
   expect(shortPath('/repo/x', '/repo')).toBe('x')
   expect(shortPath('/repox/y', '/repo')).toBe('/repox/y')
+  expect(shortPath('/home/me/.p10k.zsh', '/repo', '/home/me')).toBe('~/.p10k.zsh')
+  expect(shortPath('/home/me2/x', '/repo', '/home/me')).toBe('/home/me2/x')
+  expect(shortPath('/home/me/repo/x', '/home/me/repo', '/home/me')).toBe('x')
   expect(clip('改了很長的路徑名稱', 9)).toBe('改了很長…')
   expect(clip('short', 9)).toBe('short')
 })

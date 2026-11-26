@@ -137,6 +137,10 @@ test('renderMermaid: measures size, renders to box ratio, reads back PNG, delete
   expect(draw).toEqual(['mmdr', '-i', '-', '-o', path, '-e', 'png', '-t', 'dark', '-c', config, '-w', '500', '-H', '616'])
   expect(reads).toEqual([path])
   expect(runs.at(-1)).toEqual(['rm', '-f', path])
+  // macOS's BSD mktemp replaces only trailing X's; any suffix after them leaves one fixed name that concurrent renders share.
+  const templates = runs.filter(argv => argv[0] === 'mktemp').map(argv => argv.at(-1) ?? '')
+  expect(templates).toHaveLength(2)
+  for (const template of templates) expect(template).toMatch(/X{6}$/)
 
   // Same code and options hit the cache without spawning a process.
   const count = runs.length
@@ -159,6 +163,16 @@ test('renderMermaid: mmdr parse failure returns null without creating a temp fil
   // Only the palette config's mktemp runs before mmdr; no PNG temp file is made.
   expect(runs.filter(argv => argv[0] === 'mmdr')).toHaveLength(1)
   expect(runs.some(argv => argv[0] === 'mktemp' && argv.some(arg => arg.endsWith('.png')))).toBe(false)
+})
+
+test('renderMermaid: a failed render is not cached, so the next request tries again', async () => {
+  clearMermaidCache()
+  let isMmdrDown = true
+  const working = mmdr('/tmp/readable-chat-mermaid-retry.png', '{"width": 100, "height": 50}')
+  const { $ } = fakeEngine(argv => (isMmdrDown && argv[0] === 'mmdr' ? fail() : working(argv)), PNG_BASE64)
+  expect(await renderMermaid($, FLOWCHART, { columns: 60, isDark: true })).toBe(null)
+  isMmdrDown = false
+  expect(await renderMermaid($, FLOWCHART, { columns: 60, isDark: true })).not.toBe(null)
 })
 
 test('renderMermaid: returns null when mmdr is not on PATH', async () => {

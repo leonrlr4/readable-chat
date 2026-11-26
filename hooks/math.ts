@@ -340,7 +340,7 @@ async function render($: MathEngine, tex: string, options: MathOptions): Promise
   )
 
   // process.run decodes stdout as UTF-8, so the PNG goes through a temp file, as in mermaid.ts.
-  const temp = await $.process.run(['mktemp', '--tmpdir', 'readable-chat-math-XXXXXX.png'], { timeoutMs: 1000 })
+  const temp = await $.process.run(['mktemp', '--tmpdir', 'readable-chat-math-XXXXXX'], { timeoutMs: 1000 })
   const path = temp.stdout.trim()
   if (temp.exitCode !== 0 || !path.startsWith('/')) return null
   try {
