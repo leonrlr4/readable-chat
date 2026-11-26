@@ -57,7 +57,7 @@ function ran(exitCode: number, stdout = '') {
 
 // Fake host: leaf answers SOURCE's leaf input with its real recorded output (anything else is echoed), images load through
 // the same stat/file/magick steps as tools.test.tsx, and mmdr and MathJax succeed or fail as asked.
-function fakeHost(on: Hook, { mermaid = false, math = true } = {}) {
+function fakeHost(on: Hook, { mermaid = false, math = true, leaf = {} as Record<string, string> } = {}) {
   const files: Record<string, string> = { '/repo/a.png': 'regular file\t12345\t1700000000' }
   const runs: (readonly string[])[] = []
   on('process.run', (_, e) => {
@@ -66,7 +66,7 @@ function fakeHost(on: Hook, { mermaid = false, math = true } = {}) {
     const stdin = String(e.init?.stdin ?? '')
     switch (argv[0]) {
       case 'leaf':
-        return ran(0, stdin === PICTURES_LEAF_INPUT ? PICTURES_LEAF_OUTPUT : stdin)
+        return ran(0, stdin === PICTURES_LEAF_INPUT ? PICTURES_LEAF_OUTPUT : (leaf[stdin] ?? stdin))
       case 'stat': {
         const line = files[argv.at(-1) ?? '']
         return line ? ran(0, `${line}\n`) : ran(1)
@@ -148,6 +148,36 @@ test('a rendered mermaid diagram has 原始碼 and 放大 buttons', async ($, on
   await ui.unmount()
 })
 
+// leaf 1.28.3 draws xychart-beta as a code frame (`└─┴─┘` bottom) and pie as ASCII (`└─┘` bottom); a pie after an
+// xychart must keep its own frame instead of being taken for the end of the xychart's.
+const CHARTS_SOURCE = [
+  '```mermaid',
+  'xychart-beta',
+  '    x-axis [a, b]',
+  '    bar [1, 2]',
+  '```',
+  '',
+  '說明',
+  '',
+  '```mermaid',
+  'pie title P',
+  '    "A" : 1',
+  '    "B" : 2',
+  '```',
+].join('\n')
+
+const CHARTS_LEAF_OUTPUT =
+  '┌─ mermaid ──────────────────────────────────┐\n│1│ xychart-beta                             │\n│2│     x-axis [a, b]                        │\n│3│     bar [1, 2]                           │\n└─┴──────────────────────────────────────────┘\n\n說明\n┌─ mermaid ───────────────────────────────────┐\n│ P                                           │\n│ ██████████▌                       A  33.3%  │\n│ █████████████████████             B  66.7%  │\n└─────────────────────────────────────────────┘\n'
+
+test('a pie after a code-framed xychart keeps its own picture and the text between them', async ($, on) => {
+  fresh()
+  fakeHost(on, { mermaid: true, leaf: { [CHARTS_SOURCE]: CHARTS_LEAF_OUTPUT } })
+  const ui = await $.ui.mount({ ...MESSAGE, requestId: 'pic-charts', props: { text: CHARTS_SOURCE, isFirstOfReply: true } })
+  expect((await ui.findAll({ type: 'Image' })).map(image => image.props.alt)).toEqual(['mermaid xychart-beta', 'mermaid pie'])
+  expect(await ui.find({ type: 'Text', text: /說明/ })).toBeTruthy()
+  await ui.unmount()
+})
+
 test('complex math becomes an Image, simple math stays text, and the code block keeps copy button 0', async ($, on) => {
   fresh()
   const runs = fakeHost(on)
@@ -193,6 +223,8 @@ test('放大 opens the original file in the desktop image viewer', async ($, on)
   const ui = await $.ui.mount({ ...MESSAGE, requestId: 'pic-7', props: { text: SOURCE, isFirstOfReply: true } })
   await ui.press({ key: 'pic-7:zoom:img0' })
   expect(runs.find(argv => argv[0] === 'sh' && argv.some(arg => arg.includes('xdg-open')))?.at(-1)).toBe('/repo/a.png')
+  // setsid and xdg-open do not exist on macOS; there the script falls back to open.
+  expect(runs.find(argv => argv.at(-1) === '/repo/a.png' && argv[0] === 'sh')?.[2]).toMatch(/else open "\$1"/)
   await ui.unmount()
 })
 

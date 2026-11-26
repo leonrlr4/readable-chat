@@ -222,6 +222,8 @@ test('renderMath: typesets with node, rasterizes with rsvg-convert, reads the PN
 
   expect(reads).toEqual(['/tmp/readable-chat-math-abc123.png'])
   expect(runs.at(-1)?.argv).toEqual(['rm', '-f', '/tmp/readable-chat-math-abc123.png'])
+  // BSD mktemp (macOS) replaces only trailing X's.
+  expect(runs.find(run => run.argv[0] === 'mktemp')?.argv.at(-1)).toMatch(/X{6}$/)
   // Every subprocess carries a timeout.
   expect(runs.every(run => typeof run.init?.timeoutMs === 'number')).toBe(true)
 })

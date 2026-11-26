@@ -9,7 +9,7 @@ import type { Line, Span } from './ansi'
 import { cardifyTables, codeBlocks, headings } from './format'
 import { extractImages } from './images'
 import { linkify } from './links'
-import { openInViewer } from './viewer'
+import { openExternal, openInViewer } from './viewer'
 import { PANE, copy, drawLines, isDarkTheme, loadPictures, openFile, opener, places, renderWithLeaf, scrollTo } from './render'
 import type { Elements } from './render'
 import type { ImageRef, PaneSpot, ReaderDoc } from '../types'
@@ -118,8 +118,8 @@ function sourceLines(text: string): Line[] {
 
 function openTarget($: EngineInterface, span: Span) {
   if (span.file) return openFile($, span.file)
-  // The API has no call that opens a URL; a press is all a Link reports. xdg-open is what a click on one runs here anyway.
-  return $.process.run(['xdg-open', span.href ?? ''], { timeoutMs: 10000 })
+  // The API has no call that opens a URL; a press is all a Link reports. The desktop's handler is what a click on one runs anyway.
+  return openExternal($, span.href ?? '', 10000)
 }
 
 type PaneElements = Elements & Pick<ElementTable, 'Markdown'> & { Input?: ElementTable<'terminal'>['Input'] }

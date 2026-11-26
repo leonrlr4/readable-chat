@@ -33,7 +33,9 @@ In the desktop app: click + next to the prompt box, then Plugins, Add marketplac
 | nvim, and optionally [herdr](https://herdr.dev) | opening clicked file paths | without herdr, a new window via `omarchy-launch-editor`, `$TERMINAL -e nvim`, or `xdg-open` |
 | [Omarchy](https://omarchy.org) | leaf colors that follow your desktop theme | leaf's default theme |
 
-Clicks and hover need Claude Code's fullscreen mode.
+Clicks and hover need Claude Code's fullscreen mode (`"tui": "fullscreen"` in `~/.claude/settings.json`); without it the buttons are drawn but a click never reaches them.
+
+Inside a multiplexer Claude Code cannot tell whether images get through, and draws each picture's text description instead. [herdr](https://herdr.dev) passes kitty graphics to Ghostty or kitty, so there set `CLAUDE_CODE_FORCE_TERMINAL_IMAGES=1`.
 
 ## What it does
 
@@ -45,10 +47,10 @@ Clicks and hover need Claude Code's fullscreen mode.
 - **Images.** An image on its own line, `![alt](path)`, is drawn in the reply (at most 20 rows) with a caption row: the alt text, the path (clicking it opens the file) or URL, `[原始碼]` to show the Markdown instead, and `[放大]`. If it cannot load, the caption says why, for example `圖：架構圖（檔案不存在）`. An image inside a sentence becomes `alt（path）`. Local PNG, JPEG, GIF, WebP, BMP and SVG are converted once into `~/.cache/readable-chat/images`. Remote https images are off by default, since fetching one tells its host you are reading; private and loopback addresses are refused even when on.
 - **Math.** Display math that leaf flattens badly (fractions, roots, sums, matrices, multi-line) is typeset by MathJax and drawn as an image with the same caption buttons. Simple formulas stay text. If typesetting fails, leaf's version stays with a note under it.
 - **Mermaid.** Diagrams get the same caption row; when `mmdr` fails, leaf's ASCII diagram stays with a note saying so. The formatting rules ask the model to chart numbers with `xychart-beta` or `pie` instead of text bars.
-- **Zoom.** `[放大]` opens the picture in the desktop's image viewer (`xdg-open`): local files and URLs as they are, mermaid and math rendered again at 3× on the terminal's background into `~/.cache/readable-chat/zoom`.
+- **Zoom.** `[放大]` opens the picture in the desktop's image viewer (`xdg-open`, or `open` on macOS): local files and URLs as they are, mermaid and math rendered again at 3× on the terminal's background into `~/.cache/readable-chat/zoom`.
 - **Reader pane.** `/reader` opens a side pane with the last 10 replies and a table of contents; pin the ones you want to keep. The search box filters the reply to matching lines, highlighted. `f` puts a keyboard label beside every link and path, so typing the label opens it. After a jump from the table of contents or to another reply, `b` goes back.
 - **Read thumbnails.** A collapsed Read of an image file shows an 8-row thumbnail under its summary row.
-- **Collapsed tool output.** Edit, Write, Bash, Read, Grep and Glob rows collapse to one line such as `✎ 改了 hooks/format.ts  +12 −3`. Failed calls stay expanded.
+- **Collapsed tool output.** Edit, Write, Bash, Read, Grep and Glob rows collapse to one line such as `✎ 改了 hooks/format.ts  +12 −3`. Paths under the home directory show as `~/`, and Claude Code's scratchpad folder as `…/scratchpad`, so the command itself fits. Failed calls stay expanded.
 - **Focus mode.** Once you send a new prompt, earlier replies draw dim. Each prompt you type gets a rule above it, and the `Worked for 23s` line and Skill-loading rows are hidden (ctrl+o still shows them).
 - **Formatting rules.** A short section added to the system prompt asks for a conclusion first, headings that state their section's point, short paragraphs, tables of at most 4 columns, and mermaid charts for numbers.
 

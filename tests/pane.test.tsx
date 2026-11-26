@@ -92,7 +92,10 @@ test('labels appear on links and paths, a label opens its target and turns label
   expect(await ui.find({ type: 'Button', key: 'hint:a' })).toBeFalsy()
   await ui.press({ key: 'hint-toggle' })
   await ui.press({ key: 'hint:s' })
-  expect(runs.some(argv => argv[0] === 'xdg-open' && argv[1] === 'https://x.com/a')).toBe(true)
+  // xdg-open on Linux, macOS's open where there is no xdg-open.
+  const link = runs.find(argv => argv[0] === 'sh' && argv.at(-1) === 'https://x.com/a')
+  expect(link?.[2]).toMatch(/xdg-open/)
+  expect(link?.[2]).toMatch(/\bopen "\$1"/)
   await ui.unmount()
 })
 
