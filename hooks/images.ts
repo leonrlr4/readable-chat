@@ -192,6 +192,7 @@ let cacheDir: Promise<string | null> | null = null
 export function clearImageCache(): void {
   cache.clear()
   cacheDir = null
+  isBsdStat = false
 }
 
 export function loadImage($: ImageEngine, ref: ImageRef, options: ImageOptions): Promise<LoadedImage> {
@@ -235,16 +236,29 @@ function run($: ImageEngine, argv: readonly string[], timeoutMs: number, stdin?:
 
 type Stat = { kind: string; size: number; mtime: number }
 
-// `-L` follows a symlink, so a link to a regular file counts as one; %F is "regular file" or "regular empty file".
+// GNU stat (Linux) takes --format; macOS ships BSD stat, which refuses it and takes -f with its own codes. Both print the same three
+// fields: file type, size in bytes, mtime in seconds. Only BSD's usage error switches over: GNU's -f means file system, so falling
+// back on any failure, such as a missing file, could leave Linux on the wrong form. Once BSD stat answers, later calls go to it directly.
+const BSD_USAGE_ERROR = /illegal option|usage: stat/
+const GNU_STAT = ['stat', '-L', '--format=%F\t%s\t%Y', '--']
+const BSD_STAT = ['stat', '-L', '-f', '%HT%t%z%t%m', '--']
+let isBsdStat = false
+
+// `-L` follows a symlink, so a link to a regular file counts as one. The type is "regular file" or "regular empty file" from GNU,
+// "Regular File" from BSD.
 async function stat($: ImageEngine, path: string): Promise<Stat | null> {
-  const result = await run($, ['stat', '-L', '--format=%F\t%s\t%Y', '--', path], 5000)
+  let result = await run($, [...(isBsdStat ? BSD_STAT : GNU_STAT), path], 5000)
+  if (result.exitCode !== 0 && !isBsdStat && BSD_USAGE_ERROR.test(result.stderr)) {
+    result = await run($, [...BSD_STAT, path], 5000)
+    if (result.exitCode === 0) isBsdStat = true
+  }
   if (result.exitCode !== 0) return null
   const [kind = '', size = '', mtime = ''] = result.stdout.trim().split('\t')
   return { kind, size: Number(size), mtime: Number(mtime) }
 }
 
 function isRegular(info: Stat | null): boolean {
-  return info !== null && info.kind.startsWith('regular')
+  return info !== null && info.kind.toLowerCase().startsWith('regular')
 }
 
 async function hash($: ImageEngine, text: string): Promise<string | null> {

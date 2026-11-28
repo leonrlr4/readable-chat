@@ -138,6 +138,26 @@ test('loadImage: local PNG is converted into the cache and read back as base64',
   expect(runs.length).toBe(count)
 })
 
+test('loadImage: BSD stat (macOS) reads the file after GNU --format is refused', async () => {
+  clearImageCache()
+  const files: Record<string, string> = { '/pics/a.png': 'Regular File\t12345\t1700000000' }
+  const { $, runs } = fakeEngine(files, argv => {
+    if (argv[0] !== 'stat') return undefined
+    if (argv.some(arg => arg.startsWith('--format'))) return { ...result(1), stderr: 'stat: illegal option -- -' }
+    const line = files[argv.at(-1) ?? '']
+    return line ? result(0, `${line}\n`) : result(1)
+  })
+  expect((await loadImage($, { kind: 'local', src: '/pics/a.png', alt: '截圖' }, OPTIONS)).ok).toBe(true)
+  expect(runs.find(argv => argv[0] === 'stat' && argv.includes('-f'))).toEqual(['stat', '-L', '-f', '%HT%t%z%t%m', '--', '/pics/a.png'])
+})
+
+test('loadImage: a missing file on GNU stat does not try the BSD form', async () => {
+  clearImageCache()
+  const { $, runs } = fakeEngine({})
+  expect((await loadImage($, { kind: 'local', src: '/pics/none.png', alt: '' }, OPTIONS)).ok).toBe(false)
+  expect(runs.filter(argv => argv[0] === 'stat')).toHaveLength(1)
+})
+
 test('loadImage: small image is never scaled up', async () => {
   clearImageCache()
   const { $ } = fakeEngine({ '/pics/a.png': 'regular file\t100\t1' })
